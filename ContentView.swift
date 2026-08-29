@@ -49,6 +49,33 @@ struct ContentView: View {
                         .cornerRadius(12)
 
                         Spacer()
+
+                        // Zoom controls at bottom
+                        VStack(spacing: 12) {
+                            HStack(spacing: 12) {
+                                ZoomButton(
+                                    label: "1×",
+                                    isSelected: cameraService.displayZoom == 1.0,
+                                    action: { cameraService.selectOneX() }
+                                )
+
+                                ZoomButton(
+                                    label: "2×",
+                                    isSelected: cameraService.displayZoom == 2.0,
+                                    action: { cameraService.selectTwoX() }
+                                )
+
+                                if cameraService.telephotoAvailable {
+                                    ZoomButton(
+                                        label: "3×",
+                                        isSelected: cameraService.displayZoom == 3.0,
+                                        action: { cameraService.selectTelephoto() }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                        .padding(.bottom)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -139,5 +166,27 @@ struct ContentView: View {
 
     private func retry() {
         cameraService.retrySetup()
+    }
+}
+
+struct ZoomButton: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(10)
+                .background(isSelected ? Color.blue : Color.black.opacity(0.5))
+                .foregroundStyle(.white)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+                )
+        }
     }
 }
