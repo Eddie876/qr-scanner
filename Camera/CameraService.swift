@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 
 @MainActor
 final class CameraService: NSObject, ObservableObject {
@@ -16,7 +17,7 @@ final class CameraService: NSObject, ObservableObject {
     @Published private(set) var diagnosticReport: String = ""
     @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
-    private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session", attributes: .serial)
+    private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
     private let debugQueue = DispatchQueue(label: "qrscanner.camera.probe")
 
     private var captureSession: AVCaptureSession?
