@@ -50,61 +50,51 @@ struct ContentView: View {
                     VStack {
                         Spacer()
 
-                        // QR scan guide (visual-only, passthrough to drag gesture)
-                        VStack(spacing: 8) {
+                        // QR aiming frame with zoom badge overlay
+                        ZStack {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.yellow, lineWidth: 2)
                                 .frame(width: 200, height: 200)
+                                .allowsHitTesting(false)
 
-                            Text("Point camera at QR code")
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
+                            // Zoom badge positioned above aiming frame
+                            Text(String(format: "%.1f×", cameraService.displayZoom))
+                                .font(.headline.monospacedDigit())
+                                .foregroundStyle(.yellow)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.black.opacity(0.55))
+                                .clipShape(Capsule())
+                                .allowsHitTesting(false)
+                                .offset(y: -130)
+                                .opacity(isZoomDragging ? 1 : 0)
                         }
-                        .padding()
-                        .background(Color.black.opacity(0.4))
-                        .cornerRadius(12)
-                        .allowsHitTesting(false)
 
                         Spacer()
 
-                        // Zoom badge (temporary, appears during drag)
-                        if isZoomDragging {
-                            Text(String(format: "%.1f×", cameraService.displayZoom))
-                                .font(.headline.monospacedDigit())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(Color.black.opacity(0.6))
-                                .clipShape(Capsule())
-                                .allowsHitTesting(false)
-                        }
+                        // Zoom controls at bottom, centered with compact layout
+                        HStack(spacing: 26) {
+                            ZoomButton(
+                                label: "1×",
+                                isSelected: cameraService.displayZoom == 1.0,
+                                action: { cameraService.selectOneX() }
+                            )
 
-                        // Zoom controls at bottom
-                        VStack(spacing: 12) {
-                            HStack(spacing: 12) {
+                            ZoomButton(
+                                label: "2×",
+                                isSelected: cameraService.displayZoom == 2.0,
+                                action: { cameraService.selectTwoX() }
+                            )
+
+                            if cameraService.telephotoAvailable {
                                 ZoomButton(
-                                    label: "1×",
-                                    isSelected: cameraService.displayZoom == 1.0,
-                                    action: { cameraService.selectOneX() }
+                                    label: "3×",
+                                    isSelected: cameraService.displayZoom == 3.0,
+                                    action: { cameraService.selectTelephoto() }
                                 )
-
-                                ZoomButton(
-                                    label: "2×",
-                                    isSelected: cameraService.displayZoom == 2.0,
-                                    action: { cameraService.selectTwoX() }
-                                )
-
-                                if cameraService.telephotoAvailable {
-                                    ZoomButton(
-                                        label: "3×",
-                                        isSelected: cameraService.displayZoom == 3.0,
-                                        action: { cameraService.selectTelephoto() }
-                                    )
-                                }
                             }
-                            .padding(.horizontal)
                         }
-                        .padding(.bottom)
+                        .padding(.bottom, 6)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -215,16 +205,11 @@ struct ZoomButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(10)
-                .background(isSelected ? Color.blue : Color.black.opacity(0.5))
-                .foregroundStyle(.white)
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
-                )
+                .font(.system(size: 17, weight: .medium).monospacedDigit())
+                .frame(width: 64, height: 44)
+                .foregroundStyle(isSelected ? Color.black.opacity(0.9) : Color.white.opacity(0.9))
+                .background(isSelected ? Color.yellow.opacity(0.6) : Color.black.opacity(0.45))
+                .clipShape(Capsule())
         }
     }
 }
