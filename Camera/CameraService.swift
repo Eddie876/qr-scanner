@@ -12,11 +12,26 @@ final class CameraService: NSObject, ObservableObject {
         case failed(String)
     }
 
+    enum ScanDecisionState: Equatable {
+        case scanning
+        case initialWaiting
+        case stabilizingMultiple
+        case opening
+    }
+
     @MainActor @Published private(set) var state: CameraState = .idle
     @MainActor @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     @MainActor @Published private(set) var displayZoom: CGFloat = 1.0
     @MainActor @Published private(set) var telephotoAvailable: Bool = false
     @MainActor private var isOpeningURL = false
+
+    // Scan arbitration (Phase A)
+    @MainActor private var scanDecisionState: ScanDecisionState = .scanning
+    @MainActor private var pendingCandidates: Set<URL> = []
+    @MainActor private var lastObservedCandidates: Set<URL> = []
+    @MainActor private var initialWindowTimer: Task<Void, Never>?
+    @MainActor private var stabilityWindowTimer: Task<Void, Never>?
+    @MainActor private var scanGenerationToken: Int = 0
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
 
@@ -70,6 +85,7 @@ final class CameraService: NSObject, ObservableObject {
     @objc
     private func appWillEnterForeground() {
         isOpeningURL = false
+        resetScanArbitration()
         sessionQueue.async { [weak self] in
             self?.startScanningOnSessionQueue()
         }
@@ -78,7 +94,20 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor
     @objc
     private func appDidEnterBackground() {
+        resetScanArbitration()
         stopScanning()
+    }
+
+    @MainActor
+    private func resetScanArbitration() {
+        initialWindowTimer?.cancel()
+        initialWindowTimer = nil
+        stabilityWindowTimer?.cancel()
+        stabilityWindowTimer = nil
+        pendingCandidates.removeAll()
+        lastObservedCandidates.removeAll()
+        scanDecisionState = .scanning
+        scanGenerationToken += 1
     }
 
     // MARK: - Public Interface
@@ -409,6 +438,155 @@ final class CameraService: NSObject, ObservableObject {
         print("Device Zoom Factor: \(String(format: "%.4f", activeDevice.videoZoomFactor))")
     }
     #endif
+
+    // MARK: - Scan Arbitration (Phase A)
+
+    @MainActor
+    private func handleScannedURLs(_ urls: Set<URL>) {
+        guard !urls.isEmpty || !pendingCandidates.isEmpty else {
+            return
+        }
+
+        switch scanDecisionState {
+        case .scanning:
+            if urls.isEmpty {
+                return
+            }
+            // Transition to initial waiting
+            pendingCandidates = urls
+            lastObservedCandidates = urls
+            scanDecisionState = .initialWaiting
+            
+            #if DEBUG
+            print("Initial window started")
+            #endif
+            
+            startInitialWindowTimer()
+
+        case .initialWaiting:
+            // Update pending candidates but don't restart the timer
+            pendingCandidates = urls
+
+        case .stabilizingMultiple:
+            // Check if the URL set changed
+            if urls != lastObservedCandidates {
+                lastObservedCandidates = urls
+                pendingCandidates = urls
+                
+                #if DEBUG
+                print("Multi set changed: [\(lastObservedCandidates.map { $0.absoluteString }.sorted().joined(separator: ", "))] -> [\(urls.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
+                print("→ reset 150 ms stability timer")
+                #endif
+                
+                // Restart stability timer
+                stabilityWindowTimer?.cancel()
+                startStabilityWindowTimer()
+            }
+
+        case .opening:
+            // Already opening, ignore new URLs
+            break
+        }
+    }
+
+    @MainActor
+    private func startInitialWindowTimer() {
+        let token = scanGenerationToken
+        let startTime = CACurrentMediaTime()
+        
+        initialWindowTimer = Task {
+            try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
+            
+            await MainActor.run { [weak self] in
+                guard let self, self.scanGenerationToken == token else { return }
+                
+                let currentURLs = self.pendingCandidates
+                
+                #if DEBUG
+                if currentURLs.isEmpty {
+                    print("Initial result: EMPTY")
+                } else if currentURLs.count == 1 {
+                    print("Initial result: [\(currentURLs.first?.absoluteString ?? "")]")
+                    print("→ OPEN single candidate")
+                } else {
+                    print("Initial result: [\(currentURLs.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
+                    print("→ ENTER multi stabilization")
+                }
+                #endif
+                
+                switch currentURLs.count {
+                case 0:
+                    self.scanDecisionState = .scanning
+                    self.pendingCandidates.removeAll()
+                    
+                case 1:
+                    if let url = currentURLs.first {
+                        self.openURL(url)
+                    }
+                    
+                default:
+                    self.scanDecisionState = .stabilizingMultiple
+                    self.lastObservedCandidates = currentURLs
+                    self.startStabilityWindowTimer()
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func startStabilityWindowTimer() {
+        let token = scanGenerationToken
+        
+        stabilityWindowTimer = Task {
+            try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
+            
+            await MainActor.run { [weak self] in
+                guard let self, self.scanGenerationToken == token else { return }
+                
+                let currentURLs = self.pendingCandidates
+                
+                #if DEBUG
+                if currentURLs.count >= 2 {
+                    print("Stable multi result: [\(currentURLs.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
+                    print("→ WAITING FOR PHASE B SELECTION")
+                } else if currentURLs.count == 1 {
+                    print("Stable single result: [\(currentURLs.first?.absoluteString ?? "")]")
+                    print("→ OPEN single candidate")
+                } else {
+                    print("Stable empty result")
+                    print("→ back to scanning")
+                }
+                #endif
+                
+                switch currentURLs.count {
+                case 0:
+                    self.scanDecisionState = .scanning
+                    self.pendingCandidates.removeAll()
+                    
+                case 1:
+                    if let url = currentURLs.first {
+                        self.openURL(url)
+                    }
+                    
+                default:
+                    // 2+ URLs: remain in stabilizingMultiple, waiting for Phase B
+                    // Do not open anything
+                    break
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func openURL(_ url: URL) {
+        guard !isOpeningURL else { return }
+        
+        resetScanArbitration()
+        isOpeningURL = true
+        scanDecisionState = .opening
+        
+        UIApplication.shared.open(url)
+    }
 }
 
 // MARK: - AVCaptureMetadataOutputObjectsDelegate
@@ -419,6 +597,9 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
     ) {
+        // Extract all valid URLs from current frame
+        var validURLs: Set<URL> = []
+        
         for metadata in metadataObjects {
             guard let qrObject = metadata as? AVMetadataMachineReadableCodeObject,
                   let stringValue = qrObject.stringValue else {
@@ -426,14 +607,14 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
             }
 
             if let url = Self.parseAndValidateURL(stringValue) {
-                // Dispatch to MainActor to handle URL opening and guard
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    guard !self.isOpeningURL else { return }
-                    self.isOpeningURL = true
-                    UIApplication.shared.open(url)
-                }
+                validURLs.insert(url)
             }
+        }
+        
+        // Dispatch scan arbitration to MainActor
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.handleScannedURLs(validURLs)
         }
     }
 
