@@ -12,7 +12,6 @@ struct ContentView: View {
             if let previewLayer = cameraService.previewLayer {
                 ZStack {
                     CameraPreview(previewLayer: previewLayer)
-                        .ignoresSafeArea()
                     
                     // Multi-QR selection overlay (Phase B)
                     if cameraService.selectionCandidates.count >= 2 {
@@ -26,6 +25,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .ignoresSafeArea()
                 .gesture(
                     DragGesture(minimumDistance: 8)
                         .onChanged { gesture in
