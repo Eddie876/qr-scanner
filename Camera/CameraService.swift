@@ -24,7 +24,7 @@ final class CameraService: NSObject, ObservableObject {
         case initialWaiting
         case stabilizingMultiple
         case selecting
-        case waitingForChangeAfterCancel
+        case cooldownAfterCancel
         case opening
     }
 
@@ -41,11 +41,11 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor private var lastObservedCandidates: Set<URL> = []
     @MainActor private var initialWindowTimer: Task<Void, Never>?
     @MainActor private var stabilityWindowTimer: Task<Void, Never>?
+    @MainActor private var cancelCooldownTask: Task<Void, Never>?
     @MainActor private var scanGenerationToken: Int = 0
     
     // Selection state (Phase B)
     @MainActor private var latestCandidatesByURL: [URL: QRCandidate] = [:]
-    @MainActor private var suppressedAfterCancelURLs: Set<URL> = []
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
 
@@ -118,10 +118,11 @@ final class CameraService: NSObject, ObservableObject {
         initialWindowTimer = nil
         stabilityWindowTimer?.cancel()
         stabilityWindowTimer = nil
+        cancelCooldownTask?.cancel()
+        cancelCooldownTask = nil
         pendingCandidates.removeAll()
         lastObservedCandidates.removeAll()
         latestCandidatesByURL.removeAll()
-        suppressedAfterCancelURLs.removeAll()
         selectionCandidates.removeAll()
         unfreezePreview()
         scanDecisionState = .scanning
@@ -461,7 +462,11 @@ final class CameraService: NSObject, ObservableObject {
 
     @MainActor
     private func handleScannedURLs(_ urls: Set<URL>, withBounds bounds: [URL: CGRect]) {
-        guard scanDecisionState == .waitingForChangeAfterCancel || !urls.isEmpty || !pendingCandidates.isEmpty else {
+        if scanDecisionState == .cooldownAfterCancel {
+            return
+        }
+
+        guard !urls.isEmpty || !pendingCandidates.isEmpty else {
             return
         }
 
@@ -520,32 +525,8 @@ final class CameraService: NSObject, ObservableObject {
             // Ignore metadata while selecting or opening
             break
             
-        case .waitingForChangeAfterCancel:
-            if urls == suppressedAfterCancelURLs {
-                pendingCandidates.removeAll()
-                lastObservedCandidates.removeAll()
-
-                #if DEBUG
-                let suppressedStr = urls.map { $0.absoluteString }.sorted().joined(separator: ", ")
-                print("Suppressed cancelled set remains visible: [\(suppressedStr)]")
-                print("→ continue suppression")
-                #endif
-
-                return
-            }
-
-            pendingCandidates = urls
-            lastObservedCandidates = urls
-            scanDecisionState = .initialWaiting
-
-            #if DEBUG
-            let suppressedStr = suppressedAfterCancelURLs.map { $0.absoluteString }.sorted().joined(separator: ", ")
-            let currentStr = urls.map { $0.absoluteString }.sorted().joined(separator: ", ")
-            print("Cancelled set changed: [\(suppressedStr)] -> [\(currentStr)]")
-            print("→ start 150 ms initial window")
-            #endif
-
-            startInitialWindowTimer()
+        case .cooldownAfterCancel:
+            break
         }
     }
 
@@ -560,54 +541,6 @@ final class CameraService: NSObject, ObservableObject {
                 guard let self, self.scanGenerationToken == token else { return }
                 
                 let currentURLs = self.pendingCandidates
-                let suppressedURLs = self.suppressedAfterCancelURLs
-
-                if !suppressedURLs.isEmpty {
-                    #if DEBUG
-                    if currentURLs == suppressedURLs {
-                        let suppressedStr = currentURLs.map { $0.absoluteString }.sorted().joined(separator: ", ")
-                        print("Initial result: [\(suppressedStr)]")
-                        print("→ continue suppression")
-                    } else if currentURLs.isEmpty {
-                        print("Initial result: EMPTY")
-                        print("→ clear suppression and return to scanning")
-                    } else if currentURLs.count == 1 {
-                        print("Initial result: [\(currentURLs.first?.absoluteString ?? "")]")
-                        print("→ OPEN single candidate")
-                    } else {
-                        print("Initial result: [\(currentURLs.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
-                        print("→ ENTER multi stabilization")
-                    }
-                    #endif
-
-                    if currentURLs == suppressedURLs {
-                        self.scanDecisionState = .waitingForChangeAfterCancel
-                        self.pendingCandidates.removeAll()
-                        self.lastObservedCandidates.removeAll()
-                        return
-                    }
-
-                    self.suppressedAfterCancelURLs.removeAll()
-
-                    switch currentURLs.count {
-                    case 0:
-                        self.scanDecisionState = .scanning
-                        self.pendingCandidates.removeAll()
-                        self.lastObservedCandidates.removeAll()
-
-                    case 1:
-                        if let url = currentURLs.first {
-                            self.openURL(url)
-                        }
-
-                    default:
-                        self.scanDecisionState = .stabilizingMultiple
-                        self.lastObservedCandidates = currentURLs
-                        self.startStabilityWindowTimer()
-                    }
-
-                    return
-                }
                 
                 #if DEBUG
                 if currentURLs.isEmpty {
@@ -636,6 +569,25 @@ final class CameraService: NSObject, ObservableObject {
                     self.lastObservedCandidates = currentURLs
                     self.startStabilityWindowTimer()
                 }
+            }
+        }
+    }
+
+    @MainActor
+    private func startCancelCooldown() {
+        cancelCooldownTask?.cancel()
+        let token = scanGenerationToken
+
+        cancelCooldownTask = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+            await MainActor.run { [weak self] in
+                guard let self, self.scanGenerationToken == token else { return }
+
+                self.cancelCooldownTask = nil
+                self.pendingCandidates.removeAll()
+                self.lastObservedCandidates.removeAll()
+                self.scanDecisionState = .scanning
             }
         }
     }
@@ -718,13 +670,17 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor
     func cancelSelection() {
         guard scanDecisionState == .selecting else { return }
-        suppressedAfterCancelURLs = Set(selectionCandidates.map(\.url))
+        initialWindowTimer?.cancel()
+        initialWindowTimer = nil
+        stabilityWindowTimer?.cancel()
+        stabilityWindowTimer = nil
         selectionCandidates.removeAll()
         pendingCandidates.removeAll()
         lastObservedCandidates.removeAll()
         latestCandidatesByURL.removeAll()
         unfreezePreview()
-        scanDecisionState = .waitingForChangeAfterCancel
+        scanDecisionState = .cooldownAfterCancel
+        startCancelCooldown()
     }
 }
 
