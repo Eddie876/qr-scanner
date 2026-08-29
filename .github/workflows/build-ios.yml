@@ -1,0 +1,81 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.swift"
+      - "Info.plist"
+      - "project.yml"
+      - ".github/workflows/build-ios.yml"
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Show project configuration
+        run: |
+          xcodebuild \
+            -project QRScanner.xcodeproj \
+            -scheme QRScanner \
+            -list
+
+      - name: Build iOS app
+        run: |
+          xcodebuild \
+            -project QRScanner.xcodeproj \
+            -scheme QRScanner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            clean build
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "QRScanner.app not found at:"
+            echo "$APP_PATH"
+            exit 1
+          fi
+
+          rm -rf Payload
+          mkdir Payload
+
+          cp -R "$APP_PATH" Payload/QRScanner.app
+
+          zip -qry QRScanner-unsigned.ipa Payload
+
+          echo "Generated:"
+          ls -lh QRScanner-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: QRScanner-unsigned
+          path: QRScanner-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

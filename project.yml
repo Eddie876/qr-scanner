@@ -1,0 +1,30 @@
+name: QRScanner
+
+options:
+  bundleIdPrefix: com.eddie876
+  deploymentTarget:
+    iOS: "17.0"
+
+targets:
+  QRScanner:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+
+    sources:
+      - path: QRScannerApp.swift
+      - path: ContentView.swift
+      - path: Camera
+
+    info:
+      path: Info.plist
+
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.eddie876.qrscanner
+        PRODUCT_NAME: QRScanner
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+
+    scheme:
+      gatherCoverageData: false
