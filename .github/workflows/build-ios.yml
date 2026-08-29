@@ -52,6 +52,17 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             clean build
 
+      - name: Validate app Info.plist
+        run: |
+          APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"
+
+          echo "Built Info.plist:"
+          plutil -p "$APP_PATH/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :NSCameraUsageDescription" \
+            "$APP_PATH/Info.plist"
+
       - name: Package unsigned IPA
         run: |
           APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"

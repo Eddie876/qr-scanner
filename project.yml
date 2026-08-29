@@ -18,6 +18,8 @@ targets:
 
     info:
       path: Info.plist
+      properties:
+        NSCameraUsageDescription: "QR Scanner needs camera access to scan QR codes."
 
     settings:
       base:
