@@ -470,8 +470,9 @@ final class CameraService: NSObject, ObservableObject {
             return
         }
 
-        // Update latest candidate positions in all states except .opening
-        if scanDecisionState != .opening {
+        if scanDecisionState == .scanning
+            || scanDecisionState == .initialWaiting
+            || scanDecisionState == .stabilizingMultiple {
             for url in urls {
                 if let bounds = bounds[url] {
                     latestCandidatesByURL[url] = QRCandidate(url: url, bounds: bounds)
@@ -629,12 +630,25 @@ final class CameraService: NSObject, ObservableObject {
                     }
                     
                 default:
-                    // 2+ URLs: enter selection mode (Phase B)
-                    self.scanDecisionState = .selecting
-                    self.selectionCandidates = currentURLs
+                    let resolvedCandidates = currentURLs
                         .compactMap { url in self.latestCandidatesByURL[url] }
                         .sorted { $0.url.absoluteString < $1.url.absoluteString }
-                    self.freezePreview()
+
+                    if resolvedCandidates.count >= 2 {
+                        self.scanDecisionState = .selecting
+                        self.selectionCandidates = resolvedCandidates
+                        self.freezePreview()
+                    } else {
+                        self.scanDecisionState = .stabilizingMultiple
+                        self.selectionCandidates.removeAll()
+
+                        #if DEBUG
+                        print("Stable multi result missing candidate geometry")
+                        print("→ wait for updated bounds and retry stabilization")
+                        #endif
+
+                        self.startStabilityWindowTimer()
+                    }
                 }
             }
         }

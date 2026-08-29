@@ -113,20 +113,20 @@ struct ContentView: View {
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        // Selection mode: show cancel button
+                        // Selection mode: show compact rescan button
                         VStack {
                             Spacer()
                             
                             Button(action: { cameraService.cancelSelection() }) {
-                                Text("Cancel")
-                                    .font(.system(size: 17, weight: .semibold))
-                                    .frame(maxWidth: .infinity)
-                                    .padding(12)
-                                    .background(Color.red.opacity(0.7))
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 20, weight: .semibold))
                                     .foregroundStyle(.white)
-                                    .cornerRadius(8)
+                                    .frame(width: 48, height: 48)
+                                    .background(Color.gray.opacity(0.55))
+                                    .clipShape(Circle())
                             }
-                            .padding()
+                            .accessibilityLabel("Scan again")
+                            .padding(.bottom, 16)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -255,10 +255,12 @@ struct SelectableQRBox: View {
     
     var body: some View {
         ZStack {
-            // Visual yellow box
-            Rectangle()
+            RoundedRectangle(cornerRadius: 6)
                 .stroke(Color.yellow, lineWidth: 3)
-                .background(Color.yellow.opacity(0.15))
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.yellow.opacity(0.15))
+                )
                 .frame(
                     width: bounds.width,
                     height: bounds.height
