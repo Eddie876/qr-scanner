@@ -3,8 +3,8 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var cameraService = CameraService()
-    @State private var pinchStartZoom: CGFloat = 1.0
-    @State private var isPinching = false
+    @State private var dragStartZoom: CGFloat = 1.0
+    @State private var isZoomDragging = false
 
     var body: some View {
         ZStack {
@@ -13,17 +13,17 @@ struct ContentView: View {
                 CameraPreview(previewLayer: previewLayer)
                     .ignoresSafeArea()
                     .gesture(
-                        MagnifyGesture()
+                        DragGesture(minimumDistance: 8)
                             .onChanged { gesture in
-                                if !isPinching {
+                                if !isZoomDragging {
                                     // Gesture just started
-                                    pinchStartZoom = cameraService.displayZoom
-                                    isPinching = true
+                                    dragStartZoom = cameraService.displayZoom
+                                    isZoomDragging = true
                                 }
-                                handlePinchChanged(gesture)
+                                handleDragZoomChanged(gesture)
                             }
                             .onEnded { _ in
-                                isPinching = false
+                                isZoomDragging = false
                             }
                     )
             } else if cameraService.state == .scanning {
@@ -50,7 +50,7 @@ struct ContentView: View {
                     VStack {
                         Spacer()
 
-                        // QR scan guide
+                        // QR scan guide (visual-only, passthrough to drag gesture)
                         VStack(spacing: 8) {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.yellow, lineWidth: 2)
@@ -63,8 +63,21 @@ struct ContentView: View {
                         .padding()
                         .background(Color.black.opacity(0.4))
                         .cornerRadius(12)
+                        .allowsHitTesting(false)
 
                         Spacer()
+
+                        // Zoom badge (temporary, appears during drag)
+                        if isZoomDragging {
+                            Text(String(format: "%.1f×", cameraService.displayZoom))
+                                .font(.headline.monospacedDigit())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(Color.black.opacity(0.6))
+                                .clipShape(Capsule())
+                                .allowsHitTesting(false)
+                        }
 
                         // Zoom controls at bottom
                         VStack(spacing: 12) {
@@ -174,10 +187,12 @@ struct ContentView: View {
         }
     }
 
-    private func handlePinchChanged(_ gesture: MagnifyGesture.Value) {
-        // Calculate target zoom from pinch magnification
+    private func handleDragZoomChanged(_ gesture: DragGesture.Value) {
+        // Calculate target zoom from vertical drag translation
         // Always calculate from the zoom recorded at gesture start
-        let targetZoom = pinchStartZoom * Double(gesture.magnification)
+        let zoomPerPoint: CGFloat = 0.02
+        let zoomDelta = -gesture.translation.height * zoomPerPoint
+        let targetZoom = dragStartZoom + zoomDelta
         cameraService.setDisplayZoom(targetZoom)
     }
 
