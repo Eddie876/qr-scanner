@@ -15,13 +15,13 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor @Published private(set) var state: CameraState = .idle
     @MainActor @Published private(set) var diagnosticReport: String = ""
     @MainActor @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    @MainActor private var isOpeningURL = false
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
     private let debugQueue = DispatchQueue(label: "qrscanner.camera.probe")
 
     private var captureSession: AVCaptureSession?
     private var metadataOutput: AVCaptureMetadataOutput?
-    private var isOpeningURL = false
 
     @MainActor
     override init() {
@@ -51,15 +51,17 @@ final class CameraService: NSObject, ObservableObject {
         )
     }
 
-    @objc 
+    @MainActor
+    @objc
     private func appWillEnterForeground() {
         isOpeningURL = false
-        if captureSession != nil {
-            startScanning()
+        sessionQueue.async { [weak self] in
+            self?.startScanningOnSessionQueue()
         }
     }
 
-    @objc 
+    @MainActor
+    @objc
     private func appDidEnterBackground() {
         stopScanning()
     }
@@ -283,22 +285,25 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
     ) {
-        guard !isOpeningURL else { return }
-
         for metadata in metadataObjects {
             guard let qrObject = metadata as? AVMetadataMachineReadableCodeObject,
                   let stringValue = qrObject.stringValue else {
                 continue
             }
 
-            if let url = parseAndValidateURL(stringValue) {
-                isOpeningURL = true
-                UIApplication.shared.open(url)
+            if let url = Self.parseAndValidateURL(stringValue) {
+                // Dispatch to MainActor to handle URL opening and guard
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard !self.isOpeningURL else { return }
+                    self.isOpeningURL = true
+                    UIApplication.shared.open(url)
+                }
             }
         }
     }
 
-    nonisolated private func parseAndValidateURL(_ string: String) -> URL? {
+    nonisolated private static func parseAndValidateURL(_ string: String) -> URL? {
         // Check if it's a valid HTTP(S) URL
         let trimmed = string.trimmingCharacters(in: .whitespaces)
 
