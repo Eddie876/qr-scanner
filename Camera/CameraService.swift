@@ -2,7 +2,6 @@ import AVFoundation
 import Foundation
 import UIKit
 
-@MainActor
 final class CameraService: NSObject, ObservableObject {
     enum CameraState: Equatable {
         case idle
@@ -13,9 +12,9 @@ final class CameraService: NSObject, ObservableObject {
         case failed(String)
     }
 
-    @Published private(set) var state: CameraState = .idle
-    @Published private(set) var diagnosticReport: String = ""
-    @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
+    @MainActor @Published private(set) var state: CameraState = .idle
+    @MainActor @Published private(set) var diagnosticReport: String = ""
+    @MainActor @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
     private let debugQueue = DispatchQueue(label: "qrscanner.camera.probe")
@@ -24,6 +23,7 @@ final class CameraService: NSObject, ObservableObject {
     private var metadataOutput: AVCaptureMetadataOutput?
     private var isOpeningURL = false
 
+    @MainActor
     override init() {
         super.init()
         setupAppLifecycleObservers()
@@ -35,6 +35,7 @@ final class CameraService: NSObject, ObservableObject {
 
     // MARK: - App Lifecycle
 
+    @MainActor
     private func setupAppLifecycleObservers() {
         NotificationCenter.default.addObserver(
             self,
@@ -50,19 +51,22 @@ final class CameraService: NSObject, ObservableObject {
         )
     }
 
-    @objc private func appWillEnterForeground() {
+    @objc 
+    private func appWillEnterForeground() {
         isOpeningURL = false
-        if state == .authorized {
+        if captureSession != nil {
             startScanning()
         }
     }
 
-    @objc private func appDidEnterBackground() {
+    @objc 
+    private func appDidEnterBackground() {
         stopScanning()
     }
 
     // MARK: - Public Interface
 
+    @MainActor
     func requestCameraPermissionAndStartScanning() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .notDetermined:
@@ -91,17 +95,19 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
+    @MainActor
     func retrySetup() {
         requestCameraPermissionAndStartScanning()
     }
 
     // MARK: - Scanner Setup
 
+    @MainActor
     private func setupAndStartScanning() {
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.setupCaptureSession()
-            self.startScanning()
+            self.setupCaptureSessionOnSessionQueue()
+            self.startScanningOnSessionQueue()
 
             #if DEBUG
             self.debugQueue.async {
@@ -111,15 +117,13 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
-    private func setupCaptureSession() {
+    private func setupCaptureSessionOnSessionQueue() {
         let session = AVCaptureSession()
         session.sessionPreset = .high
 
         // Get the wide angle camera
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            Task { @MainActor in
-                self.state = .failed("Wide angle camera not available.")
-            }
+            updateStateToFailed("Wide angle camera not available.")
             return
         }
 
@@ -129,15 +133,11 @@ final class CameraService: NSObject, ObservableObject {
             if session.canAddInput(input) {
                 session.addInput(input)
             } else {
-                Task { @MainActor in
-                    self.state = .failed("Cannot add camera input to session.")
-                }
+                updateStateToFailed("Cannot add camera input to session.")
                 return
             }
         } catch {
-            Task { @MainActor in
-                self.state = .failed("Failed to configure camera input: \(error.localizedDescription)")
-            }
+            updateStateToFailed("Failed to configure camera input: \(error.localizedDescription)")
             return
         }
 
@@ -151,15 +151,11 @@ final class CameraService: NSObject, ObservableObject {
             if metadataOutput.availableMetadataObjectTypes.contains(.qr) {
                 metadataOutput.metadataObjectTypes = [.qr]
             } else {
-                Task { @MainActor in
-                    self.state = .failed("QR code detection not supported.")
-                }
+                updateStateToFailed("QR code detection not supported.")
                 return
             }
         } else {
-            Task { @MainActor in
-                self.state = .failed("Cannot add metadata output to session.")
-            }
+            updateStateToFailed("Cannot add metadata output to session.")
             return
         }
 
@@ -168,26 +164,39 @@ final class CameraService: NSObject, ObservableObject {
         // Create preview layer
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
-        Task { @MainActor in
-            self.previewLayer = previewLayer
-        }
+        updatePreviewLayer(previewLayer)
 
         self.captureSession = session
     }
 
-    private func startScanning() {
-        guard let session = captureSession, !session.isRunning else { return }
-        sessionQueue.async {
-            session.startRunning()
-            Task { @MainActor in
-                self.state = .scanning
-            }
+    private func updateStateToFailed(_ message: String) {
+        Task { @MainActor in
+            self.state = .failed(message)
         }
     }
 
+    private func updatePreviewLayer(_ previewLayer: AVCaptureVideoPreviewLayer) {
+        Task { @MainActor in
+            self.previewLayer = previewLayer
+        }
+    }
+
+    private func updateStateToScanning() {
+        Task { @MainActor in
+            self.state = .scanning
+        }
+    }
+
+    private func startScanningOnSessionQueue() {
+        guard let session = captureSession, !session.isRunning else { return }
+        session.startRunning()
+        updateStateToScanning()
+    }
+
     private func stopScanning() {
-        guard let session = captureSession, session.isRunning else { return }
-        sessionQueue.async {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard let session = self.captureSession, session.isRunning else { return }
             session.stopRunning()
         }
     }
@@ -269,7 +278,7 @@ final class CameraService: NSObject, ObservableObject {
 // MARK: - AVCaptureMetadataOutputObjectsDelegate
 
 extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
-    func metadataOutput(
+    nonisolated func metadataOutput(
         _ output: AVCaptureMetadataOutput,
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
@@ -289,7 +298,7 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
         }
     }
 
-    private func parseAndValidateURL(_ string: String) -> URL? {
+    nonisolated private func parseAndValidateURL(_ string: String) -> URL? {
         // Check if it's a valid HTTP(S) URL
         let trimmed = string.trimmingCharacters(in: .whitespaces)
 
