@@ -2,6 +2,13 @@ import AVFoundation
 import Foundation
 import UIKit
 
+struct QRCandidate: Identifiable {
+    let url: URL
+    let bounds: CGRect
+    
+    var id: URL { url }
+}
+
 final class CameraService: NSObject, ObservableObject {
     enum CameraState: Equatable {
         case idle
@@ -16,6 +23,8 @@ final class CameraService: NSObject, ObservableObject {
         case scanning
         case initialWaiting
         case stabilizingMultiple
+        case selecting
+        case waitingForClearAfterCancel
         case opening
     }
 
@@ -23,6 +32,7 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     @MainActor @Published private(set) var displayZoom: CGFloat = 1.0
     @MainActor @Published private(set) var telephotoAvailable: Bool = false
+    @MainActor @Published private(set) var selectionCandidates: [QRCandidate] = []
     @MainActor private var isOpeningURL = false
 
     // Scan arbitration (Phase A)
@@ -32,6 +42,9 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor private var initialWindowTimer: Task<Void, Never>?
     @MainActor private var stabilityWindowTimer: Task<Void, Never>?
     @MainActor private var scanGenerationToken: Int = 0
+    
+    // Selection state (Phase B)
+    @MainActor private var latestCandidatesByURL: [URL: QRCandidate] = [:]
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
 
@@ -106,6 +119,9 @@ final class CameraService: NSObject, ObservableObject {
         stabilityWindowTimer = nil
         pendingCandidates.removeAll()
         lastObservedCandidates.removeAll()
+        latestCandidatesByURL.removeAll()
+        selectionCandidates.removeAll()
+        unfreezePreview()
         scanDecisionState = .scanning
         scanGenerationToken += 1
     }
@@ -442,9 +458,18 @@ final class CameraService: NSObject, ObservableObject {
     // MARK: - Scan Arbitration (Phase A)
 
     @MainActor
-    private func handleScannedURLs(_ urls: Set<URL>) {
+    private func handleScannedURLs(_ urls: Set<URL>, withBounds bounds: [URL: CGRect]) {
         guard !urls.isEmpty || !pendingCandidates.isEmpty else {
             return
+        }
+
+        // Update latest candidate positions in all states except .opening
+        if scanDecisionState != .opening {
+            for url in urls {
+                if let bounds = bounds[url] {
+                    latestCandidatesByURL[url] = QRCandidate(url: url, bounds: bounds)
+                }
+            }
         }
 
         switch scanDecisionState {
@@ -468,24 +493,42 @@ final class CameraService: NSObject, ObservableObject {
             pendingCandidates = urls
 
         case .stabilizingMultiple:
-            // Check if the URL set changed
+            // Check if the URL set changed (fix DEBUG bug by capturing oldSet)
             if urls != lastObservedCandidates {
+                let oldSet = lastObservedCandidates
                 lastObservedCandidates = urls
                 pendingCandidates = urls
                 
                 #if DEBUG
-                print("Multi set changed: [\(lastObservedCandidates.map { $0.absoluteString }.sorted().joined(separator: ", "))] -> [\(urls.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
+                let oldStr = oldSet.map { $0.absoluteString }.sorted().joined(separator: ", ")
+                let newStr = urls.map { $0.absoluteString }.sorted().joined(separator: ", ")
+                print("Multi set changed: [\(oldStr)] -> [\(newStr)]")
                 print("→ reset 150 ms stability timer")
                 #endif
                 
                 // Restart stability timer
                 stabilityWindowTimer?.cancel()
                 startStabilityWindowTimer()
+            } else {
+                // Set unchanged, but update pending candidates (for bounds updates)
+                pendingCandidates = urls
             }
 
-        case .opening:
-            // Already opening, ignore new URLs
+        case .selecting, .opening:
+            // Ignore metadata while selecting or opening
             break
+            
+        case .waitingForClearAfterCancel:
+            // Wait until URLs become empty
+            if urls.isEmpty {
+                #if DEBUG
+                print("QR group cleared after cancel")
+                print("→ back to scanning")
+                #endif
+                scanDecisionState = .scanning
+                pendingCandidates.removeAll()
+                latestCandidatesByURL.removeAll()
+            }
         }
     }
 
@@ -548,7 +591,7 @@ final class CameraService: NSObject, ObservableObject {
                 #if DEBUG
                 if currentURLs.count >= 2 {
                     print("Stable multi result: [\(currentURLs.map { $0.absoluteString }.sorted().joined(separator: ", "))]")
-                    print("→ WAITING FOR PHASE B SELECTION")
+                    print("→ ENTER SELECTION MODE")
                 } else if currentURLs.count == 1 {
                     print("Stable single result: [\(currentURLs.first?.absoluteString ?? "")]")
                     print("→ OPEN single candidate")
@@ -562,6 +605,7 @@ final class CameraService: NSObject, ObservableObject {
                 case 0:
                     self.scanDecisionState = .scanning
                     self.pendingCandidates.removeAll()
+                    self.latestCandidatesByURL.removeAll()
                     
                 case 1:
                     if let url = currentURLs.first {
@@ -569,9 +613,12 @@ final class CameraService: NSObject, ObservableObject {
                     }
                     
                 default:
-                    // 2+ URLs: remain in stabilizingMultiple, waiting for Phase B
-                    // Do not open anything
-                    break
+                    // 2+ URLs: enter selection mode (Phase B)
+                    self.scanDecisionState = .selecting
+                    self.selectionCandidates = currentURLs
+                        .compactMap { url in self.latestCandidatesByURL[url] }
+                        .sorted { $0.url.absoluteString < $1.url.absoluteString }
+                    self.freezePreview()
                 }
             }
         }
@@ -587,6 +634,31 @@ final class CameraService: NSObject, ObservableObject {
         
         UIApplication.shared.open(url)
     }
+
+    @MainActor
+    private func freezePreview() {
+        previewLayer?.connection?.isEnabled = false
+    }
+
+    @MainActor
+    private func unfreezePreview() {
+        previewLayer?.connection?.isEnabled = true
+    }
+
+    @MainActor
+    func selectCandidate(_ url: URL) {
+        guard !isOpeningURL, scanDecisionState == .selecting else { return }
+        openURL(url)
+    }
+
+    @MainActor
+    func cancelSelection() {
+        guard scanDecisionState == .selecting else { return }
+        selectionCandidates.removeAll()
+        latestCandidatesByURL.removeAll()
+        unfreezePreview()
+        scanDecisionState = .waitingForClearAfterCancel
+    }
 }
 
 // MARK: - AVCaptureMetadataOutputObjectsDelegate
@@ -597,8 +669,11 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
     ) {
-        // Extract all valid URLs from current frame
+        // Extract all valid URLs and their bounds from current frame
         var validURLs: Set<URL> = []
+        var candidatesWithBounds: [URL: CGRect] = [:]
+        
+        guard let previewLayer = self.previewLayer else { return }
         
         for metadata in metadataObjects {
             guard let qrObject = metadata as? AVMetadataMachineReadableCodeObject,
@@ -608,13 +683,18 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
 
             if let url = Self.parseAndValidateURL(stringValue) {
                 validURLs.insert(url)
+                // Transform metadata coordinates to preview layer coordinates
+                let transformedObject = previewLayer.transformedMetadataObject(for: qrObject)
+                if let transformedQR = transformedObject as? AVMetadataMachineReadableCodeObject {
+                    candidatesWithBounds[url] = transformedQR.bounds
+                }
             }
         }
         
         // Dispatch scan arbitration to MainActor
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.handleScannedURLs(validURLs)
+            self.handleScannedURLs(validURLs, withBounds: candidatesWithBounds)
         }
     }
 

@@ -10,13 +10,29 @@ struct ContentView: View {
         ZStack {
             // Camera preview (fill entire screen)
             if let previewLayer = cameraService.previewLayer {
-                CameraPreview(previewLayer: previewLayer)
-                    .ignoresSafeArea()
-                    .gesture(
+                ZStack {
+                    CameraPreview(previewLayer: previewLayer)
+                        .ignoresSafeArea()
+                    
+                    // Multi-QR selection overlay (Phase B)
+                    if cameraService.selectionCandidates.count >= 2 {
+                        ForEach(cameraService.selectionCandidates) { candidate in
+                            SelectableQRBox(
+                                bounds: candidate.bounds,
+                                onTap: {
+                                    cameraService.selectCandidate(candidate.url)
+                                }
+                            )
+                        }
+                    }
+                }
+                .gesture(
+                    // Only allow drag zoom when NOT selecting
+                    cameraService.selectionCandidates.isEmpty ?
+                    AnyGesture(
                         DragGesture(minimumDistance: 8)
                             .onChanged { gesture in
                                 if !isZoomDragging {
-                                    // Gesture just started
                                     dragStartZoom = cameraService.displayZoom
                                     isZoomDragging = true
                                 }
@@ -25,7 +41,8 @@ struct ContentView: View {
                             .onEnded { _ in
                                 isZoomDragging = false
                             }
-                    )
+                    ) : AnyGesture(TapGesture())
+                )
             } else if cameraService.state == .scanning {
                 // Placeholder while preview layer is being set up
                 Color.black
@@ -46,57 +63,77 @@ struct ContentView: View {
                     .background(Color.black.opacity(0.3))
 
                 case .authorized, .scanning:
-                    // Scanning state: show QR guide overlay
-                    VStack {
-                        Spacer()
+                    // Scanning state: show QR guide overlay (hide when selecting)
+                    if cameraService.selectionCandidates.isEmpty {
+                        VStack {
+                            Spacer()
 
-                        // QR aiming frame with zoom badge overlay
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.yellow, lineWidth: 2)
-                                .frame(width: 200, height: 200)
-                                .allowsHitTesting(false)
+                            // QR aiming frame with zoom badge overlay
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.yellow, lineWidth: 2)
+                                    .frame(width: 200, height: 200)
+                                    .allowsHitTesting(false)
 
-                            // Zoom badge positioned above aiming frame
-                            Text(String(format: "%.1f×", cameraService.displayZoom))
-                                .font(.headline.monospacedDigit())
-                                .foregroundStyle(.yellow)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Color.black.opacity(0.55))
-                                .clipShape(Capsule())
-                                .allowsHitTesting(false)
-                                .offset(y: -130)
-                                .opacity(isZoomDragging ? 1 : 0)
-                        }
-
-                        Spacer()
-
-                        // Zoom controls at bottom, centered with compact layout
-                        HStack(spacing: 26) {
-                            ZoomButton(
-                                label: "1×",
-                                isSelected: cameraService.displayZoom == 1.0,
-                                action: { cameraService.selectOneX() }
-                            )
-
-                            ZoomButton(
-                                label: "2×",
-                                isSelected: cameraService.displayZoom == 2.0,
-                                action: { cameraService.selectTwoX() }
-                            )
-
-                            if cameraService.telephotoAvailable {
-                                ZoomButton(
-                                    label: "3×",
-                                    isSelected: cameraService.displayZoom == 3.0,
-                                    action: { cameraService.selectTelephoto() }
-                                )
+                                // Zoom badge positioned above aiming frame
+                                Text(String(format: "%.1f×", cameraService.displayZoom))
+                                    .font(.headline.monospacedDigit())
+                                    .foregroundStyle(.yellow)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(Color.black.opacity(0.55))
+                                    .clipShape(Capsule())
+                                    .allowsHitTesting(false)
+                                    .offset(y: -130)
+                                    .opacity(isZoomDragging ? 1 : 0)
                             }
+
+                            Spacer()
+
+                            // Zoom controls at bottom, centered with compact layout
+                            HStack(spacing: 26) {
+                                ZoomButton(
+                                    label: "1×",
+                                    isSelected: cameraService.displayZoom == 1.0,
+                                    action: { cameraService.selectOneX() }
+                                )
+
+                                ZoomButton(
+                                    label: "2×",
+                                    isSelected: cameraService.displayZoom == 2.0,
+                                    action: { cameraService.selectTwoX() }
+                                )
+
+                                if cameraService.telephotoAvailable {
+                                    ZoomButton(
+                                        label: "3×",
+                                        isSelected: cameraService.displayZoom == 3.0,
+                                        action: { cameraService.selectTelephoto() }
+                                    )
+                                }
+                            }
+                            .padding(.bottom, 6)
                         }
-                        .padding(.bottom, 6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        // Selection mode: show cancel button
+                        VStack {
+                            Spacer()
+                            
+                            Button(action: { cameraService.cancelSelection() }) {
+                                Text("Cancel")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(12)
+                                    .background(Color.red.opacity(0.7))
+                                    .foregroundStyle(.white)
+                                    .cornerRadius(8)
+                            }
+                            .padding()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
 
                 case .unauthorized:
                     // Permission denied
@@ -197,6 +234,7 @@ struct ContentView: View {
     }
 }
 
+
 struct ZoomButton: View {
     let label: String
     let isSelected: Bool
@@ -211,5 +249,36 @@ struct ZoomButton: View {
                 .background(isSelected ? Color.yellow.opacity(0.6) : Color.black.opacity(0.45))
                 .clipShape(Capsule())
         }
+    }
+}
+
+struct SelectableQRBox: View {
+    let bounds: CGRect
+    let onTap: () -> Void
+    
+    var body: some View {
+        ZStack {
+            // Visual yellow box
+            Rectangle()
+                .stroke(Color.yellow, lineWidth: 3)
+                .background(Color.yellow.opacity(0.15))
+                .frame(
+                    width: bounds.width,
+                    height: bounds.height
+                )
+            
+            // Invisible tap target (larger for easier interaction)
+            Rectangle()
+                .fill(Color.clear)
+                .frame(
+                    width: bounds.width + 24,
+                    height: bounds.height + 24
+                )
+                .onTapGesture(perform: onTap)
+        }
+        .position(
+            x: bounds.midX,
+            y: bounds.midY
+        )
     }
 }
