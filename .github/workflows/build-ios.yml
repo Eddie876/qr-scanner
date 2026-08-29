@@ -6,12 +6,17 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
     paths:
       - "**/*.swift"
       - "Info.plist"
       - "project.yml"
       - ".github/workflows/build-ios.yml"
       - "Assets.xcassets/**"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -53,20 +58,10 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             clean build
 
-      - name: Validate app Info.plist
+      - name: Validate app and read version
         run: |
           APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"
-
-          echo "Built Info.plist:"
-          plutil -p "$APP_PATH/Info.plist"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :NSCameraUsageDescription" \
-            "$APP_PATH/Info.plist"
-
-      - name: Package unsigned IPA
-        run: |
-          APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"
+          PLIST="$APP_PATH/Info.plist"
 
           if [ ! -d "$APP_PATH" ]; then
             echo "QRScanner.app not found at:"
@@ -74,20 +69,73 @@ jobs:
             exit 1
           fi
 
+          echo "Built Info.plist:"
+          plutil -p "$PLIST"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :NSCameraUsageDescription" \
+            "$PLIST"
+
+          VERSION=$(/usr/libexec/PlistBuddy \
+            -c "Print :CFBundleShortVersionString" \
+            "$PLIST")
+
+          BUILD=$(/usr/libexec/PlistBuddy \
+            -c "Print :CFBundleVersion" \
+            "$PLIST")
+
+          echo "App version: $VERSION"
+          echo "Build number: $BUILD"
+
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "APP_BUILD=$BUILD" >> "$GITHUB_ENV"
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          EXPECTED_TAG="v${APP_VERSION}"
+
+          echo "Tag:      $GITHUB_REF_NAME"
+          echo "Expected: $EXPECTED_TAG"
+
+          if [ "$GITHUB_REF_NAME" != "$EXPECTED_TAG" ]; then
+            echo "Release tag does not match app version."
+            echo "project.yml version: ${APP_VERSION}"
+            echo "Git tag: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Package unsigned IPA
+        run: |
+          APP_PATH="$PWD/build/Build/Products/Release-iphoneos/QRScanner.app"
+          IPA_FILE="QRScanner-v${APP_VERSION}-unsigned.ipa"
+
           rm -rf Payload
           mkdir Payload
 
           cp -R "$APP_PATH" Payload/QRScanner.app
 
-          zip -qry QRScanner-unsigned.ipa Payload
+          zip -qry "$IPA_FILE" Payload
 
           echo "Generated:"
-          ls -lh QRScanner-unsigned.ipa
+          ls -lh "$IPA_FILE"
 
-      - name: Upload unsigned IPA
+          echo "IPA_FILE=$IPA_FILE" >> "$GITHUB_ENV"
+
+      - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v6
         with:
-          name: QRScanner-unsigned
-          path: QRScanner-unsigned.ipa
+          name: QRScanner-v${{ env.APP_VERSION }}-unsigned
+          path: ${{ env.IPA_FILE }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$IPA_FILE" \
+            --title "QR Scanner $GITHUB_REF_NAME" \
+            --generate-notes
