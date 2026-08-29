@@ -12,6 +12,20 @@ struct ContentView: View {
             if let previewLayer = cameraService.previewLayer {
                 ZStack {
                     CameraPreview(previewLayer: previewLayer)
+                        .gesture(
+                            DragGesture(minimumDistance: 8)
+                                .onChanged { gesture in
+                                    if !isZoomDragging {
+                                        dragStartZoom = cameraService.displayZoom
+                                        isZoomDragging = true
+                                    }
+                                    handleDragZoomChanged(gesture)
+                                }
+                                .onEnded { _ in
+                                    isZoomDragging = false
+                                }
+                        )
+                        .allowsHitTesting(cameraService.selectionCandidates.isEmpty)
                     
                     // Multi-QR selection overlay (Phase B)
                     if cameraService.selectionCandidates.count >= 2 {
@@ -26,20 +40,6 @@ struct ContentView: View {
                     }
                 }
                 .ignoresSafeArea()
-                .gesture(
-                    DragGesture(minimumDistance: 8)
-                        .onChanged { gesture in
-                            if !isZoomDragging {
-                                dragStartZoom = cameraService.displayZoom
-                                isZoomDragging = true
-                            }
-                            handleDragZoomChanged(gesture)
-                        }
-                        .onEnded { _ in
-                            isZoomDragging = false
-                        },
-                    including: cameraService.selectionCandidates.isEmpty ? .all : .none
-                )
             } else if cameraService.state == .scanning {
                 // Placeholder while preview layer is being set up
                 Color.black
@@ -265,16 +265,13 @@ struct SelectableQRBox: View {
                     width: bounds.width,
                     height: bounds.height
                 )
-            
-            // Invisible tap target (larger for easier interaction)
-            Rectangle()
-                .fill(Color.clear)
-                .frame(
-                    width: bounds.width + 24,
-                    height: bounds.height + 24
-                )
-                .onTapGesture(perform: onTap)
         }
+        .frame(
+            width: bounds.width + 24,
+            height: bounds.height + 24
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
         .position(
             x: bounds.midX,
             y: bounds.midY
