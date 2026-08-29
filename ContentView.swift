@@ -3,6 +3,8 @@ import UIKit
 
 struct ContentView: View {
     @StateObject private var cameraService = CameraService()
+    @State private var pinchStartZoom: CGFloat = 1.0
+    @State private var isPinching = false
 
     var body: some View {
         ZStack {
@@ -10,6 +12,20 @@ struct ContentView: View {
             if let previewLayer = cameraService.previewLayer {
                 CameraPreview(previewLayer: previewLayer)
                     .ignoresSafeArea()
+                    .gesture(
+                        MagnifyGesture()
+                            .onChanged { gesture in
+                                if !isPinching {
+                                    // Gesture just started
+                                    pinchStartZoom = cameraService.displayZoom
+                                    isPinching = true
+                                }
+                                handlePinchChanged(gesture)
+                            }
+                            .onEnded { _ in
+                                isPinching = false
+                            }
+                    )
             } else if cameraService.state == .scanning {
                 // Placeholder while preview layer is being set up
                 Color.black
@@ -156,6 +172,13 @@ struct ContentView: View {
         .task {
             cameraService.requestCameraPermissionAndStartScanning()
         }
+    }
+
+    private func handlePinchChanged(_ gesture: MagnifyGesture.Value) {
+        // Calculate target zoom from pinch magnification
+        // Always calculate from the zoom recorded at gesture start
+        let targetZoom = pinchStartZoom * Double(gesture.magnification)
+        cameraService.setDisplayZoom(targetZoom)
     }
 
     private func openSettings() {

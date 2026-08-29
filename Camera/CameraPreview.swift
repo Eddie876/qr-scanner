@@ -27,6 +27,7 @@ final class CameraPreviewView: UIView {
 
 struct CameraPreview: UIViewRepresentable {
     let previewLayer: AVCaptureVideoPreviewLayer
+    var onZoomChange: ((CGFloat) -> Void)?
 
     func makeUIView(context: Context) -> CameraPreviewView {
         let view = CameraPreviewView()

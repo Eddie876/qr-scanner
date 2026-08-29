@@ -29,6 +29,17 @@ final class CameraService: NSObject, ObservableObject {
     private var activeDevice: AVCaptureDevice?
     private var activeInput: AVCaptureDeviceInput?
 
+    // Zoom state (sessionQueue-owned)
+    private let minimumDisplayZoom: CGFloat = 1.0
+    private let telephotoOpticalFactor: CGFloat = 3.0
+    private let maximumDisplayZoom: CGFloat = 10.0
+    private let lensSwitchCooldown: TimeInterval = 0.2
+    
+    private var currentDisplayZoom: CGFloat = 1.0
+    private var lastLensSwitchTime: TimeInterval = 0
+    private var lastZoomUpdateTime: TimeInterval = 0
+    private let zoomUpdateThrottleInterval: TimeInterval = 1.0 / 60.0  // 60 Hz
+
     @MainActor
     override init() {
         super.init()
@@ -112,22 +123,24 @@ final class CameraService: NSObject, ObservableObject {
 
     @MainActor
     func selectOneX() {
-        sessionQueue.async { [weak self] in
-            self?.selectOneXOnSessionQueue()
-        }
+        setDisplayZoom(1.0)
     }
 
     @MainActor
     func selectTwoX() {
-        sessionQueue.async { [weak self] in
-            self?.selectTwoXOnSessionQueue()
-        }
+        setDisplayZoom(2.0)
     }
 
     @MainActor
     func selectTelephoto() {
+        setDisplayZoom(3.0)
+    }
+
+    @MainActor
+    func setDisplayZoom(_ zoom: CGFloat) {
+        let clampedZoom = max(minimumDisplayZoom, min(zoom, maximumDisplayZoom))
         sessionQueue.async { [weak self] in
-            self?.selectTelephotoOnSessionQueue()
+            self?.setDisplayZoomOnSessionQueue(clampedZoom)
         }
     }
 
@@ -214,10 +227,6 @@ final class CameraService: NSObject, ObservableObject {
         updatePreviewLayer(previewLayer)
 
         self.captureSession = session
-
-        #if DEBUG
-        logZoomDebugInfo()
-        #endif
     }
 
     private func updateStateToFailed(_ message: String) {
@@ -252,49 +261,62 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Zoom Selection (Phase 2.1)
+    // MARK: - Zoom Mapping (Phase 2.2)
 
-    private func selectOneXOnSessionQueue() {
-        guard let wideCamera, let session = captureSession else { return }
+    private func setDisplayZoomOnSessionQueue(_ targetDisplayZoom: CGFloat) {
+        // Throttle zoom updates to ~60 Hz
+        let now = CACurrentMediaTime()
+        if now - lastZoomUpdateTime < zoomUpdateThrottleInterval {
+            return
+        }
+        lastZoomUpdateTime = now
 
-        // If already on wide camera, just adjust zoom
-        if activeDevice?.uniqueID == wideCamera.uniqueID {
-            setDeviceZoomFactor(wideCamera, factor: 1.0)
+        guard let session = captureSession, let wide = wideCamera else { return }
+
+        currentDisplayZoom = targetDisplayZoom
+
+        if targetDisplayZoom < telephotoOpticalFactor {
+            // Use physical Wide camera
+            let shouldSwitchToWide = activeDevice?.uniqueID != wide.uniqueID
+            
+            if shouldSwitchToWide {
+                // Check cooldown before switching
+                if now - lastLensSwitchTime >= lensSwitchCooldown {
+                    replaceCameraInput(with: wide)
+                    lastLensSwitchTime = now
+                    #if DEBUG
+                    logLensSwitchInfo("Wide")
+                    #endif
+                }
+            }
+
+            // Apply zoom on Wide camera
+            let clampedZoom = max(wide.minAvailableVideoZoomFactor, min(targetDisplayZoom, wide.maxAvailableVideoZoomFactor))
+            setDeviceZoomFactor(wide, factor: clampedZoom)
         } else {
-            // Switch to wide camera
-            replaceCameraInput(with: wideCamera)
-            setDeviceZoomFactor(wideCamera, factor: 1.0)
+            // Use physical Telephoto camera
+            guard let tele = telephotoCamera else { return }
+            
+            let shouldSwitchToTele = activeDevice?.uniqueID != tele.uniqueID
+            
+            if shouldSwitchToTele {
+                // Check cooldown before switching
+                if now - lastLensSwitchTime >= lensSwitchCooldown {
+                    replaceCameraInput(with: tele)
+                    lastLensSwitchTime = now
+                    #if DEBUG
+                    logLensSwitchInfo("Telephoto")
+                    #endif
+                }
+            }
+
+            // Calculate device zoom for telephoto
+            let deviceZoom = targetDisplayZoom / telephotoOpticalFactor
+            let clampedZoom = max(tele.minAvailableVideoZoomFactor, min(deviceZoom, tele.maxAvailableVideoZoomFactor))
+            setDeviceZoomFactor(tele, factor: clampedZoom)
         }
 
-        updateDisplayZoom(1.0)
-    }
-
-    private func selectTwoXOnSessionQueue() {
-        guard let wideCamera, let session = captureSession else { return }
-
-        // Switch to wide camera if not already on it
-        if activeDevice?.uniqueID != wideCamera.uniqueID {
-            replaceCameraInput(with: wideCamera)
-        }
-
-        // Set 2× zoom with clamping
-        let zoomFactor = min(2.0, wideCamera.maxAvailableVideoZoomFactor)
-        let clampedFactor = max(zoomFactor, wideCamera.minAvailableVideoZoomFactor)
-        setDeviceZoomFactor(wideCamera, factor: clampedFactor)
-
-        updateDisplayZoom(clampedFactor)
-    }
-
-    private func selectTelephotoOnSessionQueue() {
-        guard let telephotoCamera, let session = captureSession else { return }
-
-        // Switch to telephoto camera
-        replaceCameraInput(with: telephotoCamera)
-        
-        // Set telephoto to 1× (native)
-        setDeviceZoomFactor(telephotoCamera, factor: 1.0)
-
-        updateDisplayZoom(3.0)
+        updateDisplayZoom(targetDisplayZoom)
     }
 
     private func replaceCameraInput(with device: AVCaptureDevice) {
@@ -317,10 +339,6 @@ final class CameraService: NSObject, ObservableObject {
                 configureCameraForCapture(device)
                 
                 session.commitConfiguration()
-
-                #if DEBUG
-                logZoomDebugInfo()
-                #endif
             } else {
                 session.commitConfiguration()
                 // Attempt to restore old input
@@ -374,12 +392,13 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     #if DEBUG
-    private func logZoomDebugInfo() {
+    private func logLensSwitchInfo(_ lensName: String) {
         guard let activeDevice else { return }
-        print("Display Zoom: \(displayZoom)x")
+        print("Lens switched:")
+        print("Display Zoom: \(String(format: "%.2f", currentDisplayZoom))x")
         print("Active Device: \(activeDevice.localizedName)")
         print("Device Type: \(activeDevice.deviceType)")
-        print("Device Zoom Factor: \(activeDevice.videoZoomFactor)")
+        print("Device Zoom Factor: \(String(format: "%.4f", activeDevice.videoZoomFactor))")
     }
     #endif
 
