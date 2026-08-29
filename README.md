@@ -7,7 +7,8 @@ The built-in iOS QR scanner doesn't let you zoom. This one does.
 * 1×–10× zoom
 * One-finger drag gesture for zoom control
 * Automatic switching between Wide and Telephoto cameras
-* Automatic opening of HTTP/HTTPS URLs
+* Automatic opening when a single QR code is detected
+* Tap to choose when multiple QR codes are detected
 * Fully on-device processing
 * No analytics, backend, or scan history
 * No third-party dependencies
