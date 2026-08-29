@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @StateObject private var cameraService = CameraService()
@@ -14,10 +15,43 @@ struct ContentView: View {
 
             statusView
 
-            Button("Run Probe") {
-                cameraService.startPhase0Probe()
+            HStack(spacing: 12) {
+                Button("Run Probe") {
+                    cameraService.startPhase0Probe()
+                }
+                .buttonStyle(.borderedProminent)
+
+                if !cameraService.diagnosticReport.isEmpty {
+                    Button(action: copyDiagnostics) {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
-            .buttonStyle(.borderedProminent)
+
+            Divider()
+
+            if !cameraService.diagnosticReport.isEmpty {
+                ScrollView {
+                    Text(cameraService.diagnosticReport)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(12)
+                }
+                .border(Color.gray.opacity(0.3))
+                .frame(maxHeight: .infinity)
+            } else {
+                VStack {
+                    Text("No diagnostics available. Tap 'Run Probe' to start.")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Spacer()
+                }
+                .frame(maxHeight: .infinity)
+            }
+
+            Spacer(minLength: 0)
         }
         .padding()
         .task {
@@ -35,7 +69,7 @@ struct ContentView: View {
             Text("Requesting camera permission...")
                 .foregroundStyle(.secondary)
         case .authorized:
-            Text("Authorized. Diagnostics printed to Xcode console.")
+            Text("Authorized")
                 .foregroundStyle(.green)
         case .unauthorized:
             Text("Camera access denied or restricted.")
@@ -44,5 +78,9 @@ struct ContentView: View {
             Text(message)
                 .foregroundStyle(.red)
         }
+    }
+
+    private func copyDiagnostics() {
+        UIPasteboard.general.string = cameraService.diagnosticReport
     }
 }

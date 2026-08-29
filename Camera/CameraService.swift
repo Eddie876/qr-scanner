@@ -12,6 +12,7 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: CameraState = .idle
+    @Published private(set) var diagnosticReport: String = ""
 
     private let probeQueue = DispatchQueue(label: "qrscanner.camera.probe")
 
@@ -84,28 +85,35 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     private func printDiagnosticReport(_ devices: [CameraDeviceInfo]) {
-        print("\n================ Camera Capability Probe (Phase 0) ================")
-        print("Rear device count: \(devices.count)")
+        var report = ""
+        report += "\n================ Camera Capability Probe (Phase 0) ================\n"
+        report += "Rear device count: \(devices.count)\n"
 
         if devices.isEmpty {
-            print("No rear video devices found.")
-            print("===================================================================\n")
-            return
+            report += "No rear video devices found.\n"
+            report += "===================================================================\n"
+        } else {
+            for (index, device) in devices.enumerated() {
+                report += "\n[Rear Device #\(index + 1)]\n"
+                report += "localizedName: \(device.localizedName)\n"
+                report += "uniqueID: \(device.uniqueID)\n"
+                report += "deviceType: \(device.deviceType)\n"
+                report += "isVirtualDevice: \(device.isVirtualDevice)\n"
+                report += "constituentDevices: \(device.constituentDevices)\n"
+                report += "virtualDeviceSwitchOverVideoZoomFactors: \(device.virtualDeviceSwitchOverVideoZoomFactors)\n"
+                report += "minAvailableVideoZoomFactor: \(device.minAvailableVideoZoomFactor)\n"
+                report += "maxAvailableVideoZoomFactor: \(device.maxAvailableVideoZoomFactor)\n"
+                report += "activeFormat.videoFieldOfView: \(device.activeFormatVideoFieldOfView)\n"
+            }
+            report += "===================================================================\n"
         }
 
-        for (index, device) in devices.enumerated() {
-            print("\n[Rear Device #\(index + 1)]")
-            print("localizedName: \(device.localizedName)")
-            print("uniqueID: \(device.uniqueID)")
-            print("deviceType: \(device.deviceType)")
-            print("isVirtualDevice: \(device.isVirtualDevice)")
-            print("constituentDevices: \(device.constituentDevices)")
-            print("virtualDeviceSwitchOverVideoZoomFactors: \(device.virtualDeviceSwitchOverVideoZoomFactors)")
-            print("minAvailableVideoZoomFactor: \(device.minAvailableVideoZoomFactor)")
-            print("maxAvailableVideoZoomFactor: \(device.maxAvailableVideoZoomFactor)")
-            print("activeFormat.videoFieldOfView: \(device.activeFormatVideoFieldOfView)")
+        // Update UI on MainActor
+        Task { @MainActor in
+            self.diagnosticReport = report
         }
 
-        print("===================================================================\n")
+        // Print to console for debugging
+        print(report)
     }
 }
