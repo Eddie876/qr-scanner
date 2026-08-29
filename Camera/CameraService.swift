@@ -13,14 +13,12 @@ final class CameraService: NSObject, ObservableObject {
     }
 
     @MainActor @Published private(set) var state: CameraState = .idle
-    @MainActor @Published private(set) var diagnosticReport: String = ""
     @MainActor @Published private(set) var previewLayer: AVCaptureVideoPreviewLayer?
     @MainActor @Published private(set) var displayZoom: CGFloat = 1.0
     @MainActor @Published private(set) var telephotoAvailable: Bool = false
     @MainActor private var isOpeningURL = false
 
     private let sessionQueue = DispatchQueue(label: "qrscanner.capture.session")
-    private let debugQueue = DispatchQueue(label: "qrscanner.camera.probe")
 
     private var captureSession: AVCaptureSession?
     private var metadataOutput: AVCaptureMetadataOutput?
@@ -152,16 +150,16 @@ final class CameraService: NSObject, ObservableObject {
             guard let self else { return }
             self.setupCaptureSessionOnSessionQueue()
             self.startScanningOnSessionQueue()
-
-            #if DEBUG
-            self.debugQueue.async {
-                self.runDiagnosticProbe()
-            }
-            #endif
         }
     }
 
     private func setupCaptureSessionOnSessionQueue() {
+        // Avoid recreating session if one already exists
+        guard captureSession == nil else {
+            startScanningOnSessionQueue()
+            return
+        }
+
         let session = AVCaptureSession()
         session.sessionPreset = .high
 
@@ -261,7 +259,7 @@ final class CameraService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Zoom Mapping (Phase 2.2)
+    // MARK: - Zoom Mapping and Camera Switching
 
     private func setDisplayZoomOnSessionQueue(_ targetDisplayZoom: CGFloat) {
         // Throttle zoom updates to ~60 Hz
@@ -294,8 +292,14 @@ final class CameraService: NSObject, ObservableObject {
             let clampedZoom = max(wide.minAvailableVideoZoomFactor, min(targetDisplayZoom, wide.maxAvailableVideoZoomFactor))
             setDeviceZoomFactor(wide, factor: clampedZoom)
         } else {
-            // Use physical Telephoto camera
-            guard let tele = telephotoCamera else { return }
+            // Use physical Telephoto camera, or fall back to Wide if unavailable
+            guard let tele = telephotoCamera else {
+                // Telephoto not available, use wide camera at maximum zoom
+                let clampedZoom = max(wide.minAvailableVideoZoomFactor, min(targetDisplayZoom, wide.maxAvailableVideoZoomFactor))
+                setDeviceZoomFactor(wide, factor: clampedZoom)
+                updateDisplayZoom(targetDisplayZoom)
+                return
+            }
             
             let shouldSwitchToTele = activeDevice?.uniqueID != tele.uniqueID
             
@@ -340,20 +344,24 @@ final class CameraService: NSObject, ObservableObject {
                 
                 session.commitConfiguration()
             } else {
-                session.commitConfiguration()
-                // Attempt to restore old input
+                // New input cannot be added, restore old input
                 if session.canAddInput(oldInput) {
                     session.addInput(oldInput)
+                    session.commitConfiguration()
+                } else {
+                    session.commitConfiguration()
+                    updateStateToFailed("Cannot add new camera input and failed to restore old input.")
                 }
-                updateStateToFailed("Cannot add new camera input.")
             }
         } catch {
-            session.commitConfiguration()
-            // Attempt to restore old input
+            // Failed to create new input, restore old input
             if session.canAddInput(oldInput) {
                 session.addInput(oldInput)
+                session.commitConfiguration()
+            } else {
+                session.commitConfiguration()
+                updateStateToFailed("Failed to switch camera: \(error.localizedDescription)")
             }
-            updateStateToFailed("Failed to switch camera: \(error.localizedDescription)")
         }
     }
 
@@ -399,79 +407,6 @@ final class CameraService: NSObject, ObservableObject {
         print("Active Device: \(activeDevice.localizedName)")
         print("Device Type: \(activeDevice.deviceType)")
         print("Device Zoom Factor: \(String(format: "%.4f", activeDevice.videoZoomFactor))")
-    }
-    #endif
-
-    // MARK: - Debugging (Phase 0)
-
-    #if DEBUG
-    private func runDiagnosticProbe() {
-        let discoveredDevices = discoverRearVideoDevices()
-        let diagnostics = discoveredDevices.map(CameraDeviceInfo.init(device:))
-        printDiagnosticReport(diagnostics)
-    }
-
-    private func discoverRearVideoDevices() -> [AVCaptureDevice] {
-        let preferredTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInUltraWideCamera,
-            .builtInWideAngleCamera,
-            .builtInTelephotoCamera,
-            .builtInDualCamera,
-            .builtInDualWideCamera,
-            .builtInTripleCamera
-        ]
-
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: preferredTypes,
-            mediaType: .video,
-            position: .back
-        )
-
-        let allBackVideoDevices = AVCaptureDevice.devices(for: .video)
-            .filter { $0.position == .back }
-
-        var byID: [String: AVCaptureDevice] = [:]
-        for device in discoverySession.devices {
-            byID[device.uniqueID] = device
-        }
-        for device in allBackVideoDevices {
-            byID[device.uniqueID] = device
-        }
-
-        return byID.values.sorted { lhs, rhs in
-            lhs.localizedName.localizedCaseInsensitiveCompare(rhs.localizedName) == .orderedAscending
-        }
-    }
-
-    private func printDiagnosticReport(_ devices: [CameraDeviceInfo]) {
-        var report = ""
-        report += "\n================ Camera Capability Probe (Phase 0) ================\n"
-        report += "Rear device count: \(devices.count)\n"
-
-        if devices.isEmpty {
-            report += "No rear video devices found.\n"
-            report += "===================================================================\n"
-        } else {
-            for (index, device) in devices.enumerated() {
-                report += "\n[Rear Device #\(index + 1)]\n"
-                report += "localizedName: \(device.localizedName)\n"
-                report += "uniqueID: \(device.uniqueID)\n"
-                report += "deviceType: \(device.deviceType)\n"
-                report += "isVirtualDevice: \(device.isVirtualDevice)\n"
-                report += "constituentDevices: \(device.constituentDevices)\n"
-                report += "virtualDeviceSwitchOverVideoZoomFactors: \(device.virtualDeviceSwitchOverVideoZoomFactors)\n"
-                report += "minAvailableVideoZoomFactor: \(device.minAvailableVideoZoomFactor)\n"
-                report += "maxAvailableVideoZoomFactor: \(device.maxAvailableVideoZoomFactor)\n"
-                report += "activeFormat.videoFieldOfView: \(device.activeFormatVideoFieldOfView)\n"
-            }
-            report += "===================================================================\n"
-        }
-
-        Task { @MainActor in
-            self.diagnosticReport = report
-        }
-
-        print(report)
     }
     #endif
 }
