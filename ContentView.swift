@@ -5,82 +5,139 @@ struct ContentView: View {
     @StateObject private var cameraService = CameraService()
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("QR Scanner")
-                .font(.title2)
-                .bold()
+        ZStack {
+            // Camera preview (fill entire screen)
+            if let previewLayer = cameraService.previewLayer {
+                CameraPreview(previewLayer: previewLayer)
+                    .ignoresSafeArea()
+            } else if cameraService.state == .scanning {
+                // Placeholder while preview layer is being set up
+                Color.black
+                    .ignoresSafeArea()
+            }
 
-            Text("Phase 0: Camera Capability Probe")
-                .font(.headline)
-
-            statusView
-
-            HStack(spacing: 12) {
-                Button("Run Probe") {
-                    cameraService.startPhase0Probe()
-                }
-                .buttonStyle(.borderedProminent)
-
-                if !cameraService.diagnosticReport.isEmpty {
-                    Button(action: copyDiagnostics) {
-                        Label("Copy", systemImage: "doc.on.doc")
+            // Overlay content based on state
+            VStack {
+                switch cameraService.state {
+                case .idle, .requestingPermission:
+                    VStack {
+                        Spacer()
+                        ProgressView()
+                            .tint(.white)
+                        Spacer()
                     }
-                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.3))
+
+                case .authorized, .scanning:
+                    // Scanning state: show QR guide overlay
+                    VStack {
+                        Spacer()
+
+                        // QR scan guide
+                        VStack(spacing: 8) {
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.yellow, lineWidth: 2)
+                                .frame(width: 200, height: 200)
+
+                            Text("Point camera at QR code")
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+                        }
+                        .padding()
+                        .background(Color.black.opacity(0.4))
+                        .cornerRadius(12)
+
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                case .unauthorized:
+                    // Permission denied
+                    VStack(spacing: 20) {
+                        Spacer()
+
+                        VStack(spacing: 12) {
+                            Image(systemName: "camera.slash")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.red)
+
+                            Text("Camera Access Required")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+
+                            Text("This app needs camera access to scan QR codes.")
+                                .font(.subheadline)
+                                .foregroundStyle(.gray)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding()
+
+                        Button(action: openSettings) {
+                            Text("Open Settings")
+                                .frame(maxWidth: .infinity)
+                                .padding(12)
+                                .background(Color.blue)
+                                .foregroundStyle(.white)
+                                .cornerRadius(8)
+                        }
+                        .padding()
+
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.6))
+
+                case .failed(let message):
+                    // Error state
+                    VStack(spacing: 20) {
+                        Spacer()
+
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.orange)
+
+                            Text("Camera Error")
+                                .font(.headline)
+                                .foregroundStyle(.white)
+
+                            Text(message)
+                                .font(.subheadline)
+                                .foregroundStyle(.gray)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding()
+
+                        Button(action: retry) {
+                            Text("Retry")
+                                .frame(maxWidth: .infinity)
+                                .padding(12)
+                                .background(Color.blue)
+                                .foregroundStyle(.white)
+                                .cornerRadius(8)
+                        }
+                        .padding()
+
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.6))
                 }
             }
-
-            Divider()
-
-            if !cameraService.diagnosticReport.isEmpty {
-                ScrollView {
-                    Text(cameraService.diagnosticReport)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                        .padding(12)
-                }
-                .border(Color.gray.opacity(0.3))
-                .frame(maxHeight: .infinity)
-            } else {
-                VStack {
-                    Text("No diagnostics available. Tap 'Run Probe' to start.")
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Spacer()
-                }
-                .frame(maxHeight: .infinity)
-            }
-
-            Spacer(minLength: 0)
         }
-        .padding()
         .task {
-            cameraService.startPhase0Probe()
+            cameraService.requestCameraPermissionAndStartScanning()
         }
     }
 
-    @ViewBuilder
-    private var statusView: some View {
-        switch cameraService.state {
-        case .idle:
-            Text("Idle")
-                .foregroundStyle(.secondary)
-        case .requestingPermission:
-            Text("Requesting camera permission...")
-                .foregroundStyle(.secondary)
-        case .authorized:
-            Text("Authorized")
-                .foregroundStyle(.green)
-        case .unauthorized:
-            Text("Camera access denied or restricted.")
-                .foregroundStyle(.red)
-        case .failed(let message):
-            Text(message)
-                .foregroundStyle(.red)
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
         }
     }
 
-    private func copyDiagnostics() {
-        UIPasteboard.general.string = cameraService.diagnosticReport
+    private func retry() {
+        cameraService.retrySetup()
     }
 }
