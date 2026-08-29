@@ -2,7 +2,7 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-private final class CameraPreviewView: UIView {
+final class CameraPreviewView: UIView {
     var previewLayer: AVCaptureVideoPreviewLayer? {
         didSet {
             oldValue?.removeFromSuperlayer()
