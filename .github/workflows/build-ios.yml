@@ -11,6 +11,7 @@ on:
       - "Info.plist"
       - "project.yml"
       - ".github/workflows/build-ios.yml"
+      - "Assets.xcassets/**"
 
 jobs:
   build:

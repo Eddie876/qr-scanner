@@ -15,10 +15,14 @@ targets:
       - path: QRScannerApp.swift
       - path: ContentView.swift
       - path: Camera
+      - path: Assets.xcassets
 
     info:
       path: Info.plist
       properties:
+        CFBundleDisplayName: "QR Scanner"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSCameraUsageDescription: "QR Scanner needs camera access to scan QR codes."
 
     settings:
@@ -27,6 +31,9 @@ targets:
         PRODUCT_NAME: QRScanner
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
     scheme:
       gatherCoverageData: false
