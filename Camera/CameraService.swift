@@ -314,7 +314,7 @@ final class CameraService: NSObject, ObservableObject {
         }
         lastZoomUpdateTime = now
 
-        guard let session = captureSession, let wide = wideCamera else { return }
+        guard let wide = wideCamera else { return }
 
         currentDisplayZoom = targetDisplayZoom
 
@@ -535,7 +535,6 @@ final class CameraService: NSObject, ObservableObject {
     @MainActor
     private func startInitialWindowTimer() {
         let token = scanGenerationToken
-        let startTime = CACurrentMediaTime()
         
         initialWindowTimer = Task {
             try? await Task.sleep(nanoseconds: 150_000_000)  // 150 ms
@@ -669,32 +668,28 @@ extension CameraService: AVCaptureMetadataOutputObjectsDelegate {
         didOutput metadataObjects: [AVMetadataObject],
         from connection: AVCaptureConnection
     ) {
-        // Extract all valid URLs and their bounds from current frame
-        var validURLs: Set<URL> = []
-        var candidatesWithBounds: [URL: CGRect] = [:]
-        
-        guard let previewLayer = self.previewLayer else { return }
-        
-        for metadata in metadataObjects {
-            guard let qrObject = metadata as? AVMetadataMachineReadableCodeObject,
-                  let stringValue = qrObject.stringValue else {
-                continue
-            }
+        MainActor.assumeIsolated { [self] in
+            guard let previewLayer else { return }
 
-            if let url = Self.parseAndValidateURL(stringValue) {
-                validURLs.insert(url)
-                // Transform metadata coordinates to preview layer coordinates
-                let transformedObject = previewLayer.transformedMetadataObject(for: qrObject)
-                if let transformedQR = transformedObject as? AVMetadataMachineReadableCodeObject {
-                    candidatesWithBounds[url] = transformedQR.bounds
+            var validURLs: Set<URL> = []
+            var candidatesWithBounds: [URL: CGRect] = [:]
+
+            for metadata in metadataObjects {
+                guard let qrObject = metadata as? AVMetadataMachineReadableCodeObject,
+                      let stringValue = qrObject.stringValue else {
+                    continue
+                }
+
+                if let url = Self.parseAndValidateURL(stringValue) {
+                    validURLs.insert(url)
+
+                    if let transformedQR = previewLayer.transformedMetadataObject(for: qrObject) as? AVMetadataMachineReadableCodeObject {
+                        candidatesWithBounds[url] = transformedQR.bounds
+                    }
                 }
             }
-        }
-        
-        // Dispatch scan arbitration to MainActor
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.handleScannedURLs(validURLs, withBounds: candidatesWithBounds)
+
+            handleScannedURLs(validURLs, withBounds: candidatesWithBounds)
         }
     }
 

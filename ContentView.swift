@@ -27,21 +27,18 @@ struct ContentView: View {
                     }
                 }
                 .gesture(
-                    // Only allow drag zoom when NOT selecting
-                    cameraService.selectionCandidates.isEmpty ?
-                    AnyGesture(
-                        DragGesture(minimumDistance: 8)
-                            .onChanged { gesture in
-                                if !isZoomDragging {
-                                    dragStartZoom = cameraService.displayZoom
-                                    isZoomDragging = true
-                                }
-                                handleDragZoomChanged(gesture)
+                    DragGesture(minimumDistance: 8)
+                        .onChanged { gesture in
+                            if !isZoomDragging {
+                                dragStartZoom = cameraService.displayZoom
+                                isZoomDragging = true
                             }
-                            .onEnded { _ in
-                                isZoomDragging = false
-                            }
-                    ) : AnyGesture(TapGesture())
+                            handleDragZoomChanged(gesture)
+                        }
+                        .onEnded { _ in
+                            isZoomDragging = false
+                        },
+                    including: cameraService.selectionCandidates.isEmpty ? .all : .none
                 )
             } else if cameraService.state == .scanning {
                 // Placeholder while preview layer is being set up
